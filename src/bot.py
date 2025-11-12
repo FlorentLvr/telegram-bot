@@ -1,6 +1,5 @@
 import os
 import asyncio
-import uuid
 import requests
 from flask import Flask, request
 from telegram import Update
@@ -32,42 +31,75 @@ tg_app = ApplicationBuilder().token(BOT_TOKEN).build()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 Hi! I’m your Support Assistant. Tell me any issue or feedback!")
 
-# Handle user messages → forward to AI agent
+# Handle user messages → forward to AI agent (streamed, as in abi_stream_completion)
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    import httpx
+    import time
+
     user_message = update.message.text
-    user_id = update.message.chat_id
-    thread_id = str(user_id)  # use chat_id as thread_id, keeps continuity per user
+    thread_id = str(update.message.chat_id)  # use chat_id as thread_id, keeps continuity per user
+
+    payload = {
+        "prompt": user_message,
+        "thread_id": thread_id
+    }
+    headers = {
+        "Authorization": f"Bearer {ABI_API_TOKEN}",
+        "Accept": "text/event-stream",
+    }
+
+    reply_msg = await update.message.reply_text("⏳ Thinking...", parse_mode=ParseMode.MARKDOWN)
+    accumulated = ""
+    last_edit = time.monotonic()
+    event_name = None
 
     try:
-        # Build payload
-        payload = {
-            "prompt": user_message,
-            "thread_id": thread_id
-        }
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("POST", ABI_API_URL, headers=headers, json=payload) as resp:
+                resp.raise_for_status()
+                async for raw_line in resp.aiter_lines():
+                    if not raw_line:
+                        continue
+                    # Parse SSE 'event: ...' lines
+                    if raw_line.startswith('event:'):
+                        event_name = raw_line[len("event:"):].strip()
+                        continue
+                    # Only process data lines for event=='message'
+                    if not raw_line.startswith("data:"):
+                        continue
+                    if event_name != "message":
+                        continue
+                    chunk = raw_line[len("data:"):].strip()
+                    if not chunk or chunk == "[DONE]":
+                        continue
+                    accumulated += chunk
+                    now = time.monotonic()
+                    # Edit the previous message every 0.5s with the current accumulated text
+                    if now - last_edit > 0.5:
+                        # In Telegram, editing very frequently can result in errors/rate-limiting, so throttle
+                        try:
+                            await reply_msg.edit_text(accumulated, parse_mode=ParseMode.MARKDOWN)
+                        except Exception:
+                            pass
+                        last_edit = now
 
-        headers = {
-            "Authorization": f"Bearer {ABI_API_TOKEN}",
-            "accept": "application/json",
-            "Content-Type": "application/json"
-        }
-
-        # Send request to your AI Support Agent
-        response = requests.post(ABI_API_URL, json=payload, headers=headers, params={"token": ABI_API_TOKEN})
-
-        if response.status_code == 200:
-            ai_reply = response.text or "✅ Got it — but no reply was returned."
-        elif response.status_code == 401:
-            ai_reply = "⚠️ Unauthorized — please check your API token."
+        # Final update after streaming is complete
+        if accumulated.strip():
+            await reply_msg.edit_text(accumulated.strip(), parse_mode=ParseMode.MARKDOWN)
         else:
-            ai_reply = f"❌ Error: {response.status_code} — {response.text}"
-
-        await update.message.reply_text(ai_reply, parse_mode=ParseMode.MARKDOWN)
-
+            await reply_msg.edit_text("✅ Got it — but no reply was returned.", parse_mode=ParseMode.MARKDOWN)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            await reply_msg.edit_text("⚠️ Unauthorized — please check your API token.", parse_mode=ParseMode.MARKDOWN)
+        else:
+            await reply_msg.edit_text(f"❌ Error: {e.response.status_code} — {e.response.text}", parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Internal error: {e}")
+        await reply_msg.edit_text(f"⚠️ Internal error: {e}", parse_mode=ParseMode.MARKDOWN)
 
 # --- Add handlers ---
-tg_app.add_handler(CommandHandler("start", start))
+tg_app.add_handler(
+    CommandHandler("start", start)
+)
 tg_app.add_handler(
     CommandHandler("help", lambda u, c: u.message.reply_text("Just send me a message — I'll forward it to Support."))
 )
