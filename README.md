@@ -43,7 +43,8 @@
    Edit `.env` and fill in your:
    - `BOT_TOKEN`
    - `OPENAI_API_KEY`
-   - `ABI_API_TOKEN`
+   - `AGENT_API_TOKEN`
+   - `AGENT_API_URL`
    - `WEBHOOK_URL`
 
 3. Install dependencies (ideally in a virtual environment):
@@ -104,7 +105,8 @@ Look for `"url": "https://abc123.ngrok.io/webhook"` and no recent 404 errors.
 3. Environment variables on Render:
    * `BOT_TOKEN` = your Telegram token
    * `WEBHOOK_URL` = `https://<your-render-service>.onrender.com` (no trailing `/webhook`)
-   * `ABI_API_TOKEN` = your AI API token
+   * `AGENT_API_TOKEN` = your AI API token
+   * `AGENT_API_URL` = your AI agent api endpoint
    * `OPENAI_API_KEY` = your OPENAI_API_KEY
 4. Optionally add `render.yaml` to describe service.
 5. Deploy — check Render logs:

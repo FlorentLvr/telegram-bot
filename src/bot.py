@@ -33,13 +33,13 @@ logger = logging.getLogger(__name__)
 
 # --- Environment variables ---
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-WEBHOOK_URL_DEV = "https://unsuppressed-observable-arlette.ngrok-free.dev"
+WEBHOOK_URL_DEV = os.environ.get("WEBHOOK_URL_DEV", "https://unsuppressed-observable-arlette.ngrok-free.dev")
 if os.environ.get("ENV") == "dev":
     WEBHOOK_URL = WEBHOOK_URL_DEV
 else:
     WEBHOOK_URL = os.getenv("WEBHOOK_URL", WEBHOOK_URL_DEV)
-ABI_API_URL = "https://abi-api.default.space.naas.ai/agents/Support/completion"
-ABI_API_TOKEN = os.environ["ABI_API_TOKEN"]
+AGENT_API_URL = os.environ["AGENT_API_URL"]
+AGENT_API_TOKEN = os.environ["AGENT_API_TOKEN"]
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 openai_client: OpenAI | None = None
 if OPENAI_API_KEY:
@@ -131,14 +131,14 @@ async def send_to_abi_api(user_message, thread_id, reply_msg):
     """Send user message to ABI API and update the reply message."""
     payload = {"prompt": user_message, "thread_id": thread_id}
     headers = {
-        "Authorization": f"Bearer {ABI_API_TOKEN}",
+        "Authorization": f"Bearer {AGENT_API_TOKEN}",
         # "Accept": "text/event-stream",  # Streaming - commented for completion endpoint
     }
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             # For completion (non-streaming), use the regular completion endpoint
-            resp = await client.post(ABI_API_URL, headers=headers, json=payload)
+            resp = await client.post(AGENT_API_URL, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
             logger.info(f"Completion response: {data}")
