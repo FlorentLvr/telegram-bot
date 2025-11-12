@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # --- Environment variables ---
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 WEBHOOK_URL = "https://unsuppressed-observable-arlette.ngrok-free.dev"
-ABI_API_URL = "https://abi-api.default.space.naas.ai/agents/Support/stream-completion"
+ABI_API_URL = "https://abi-api.default.space.naas.ai/agents/Support/completion"
 ABI_API_TOKEN = os.environ["ABI_API_TOKEN"]
 
 # --- Telegram application ---
@@ -54,7 +54,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     logger.info(f"User {update.message.chat_id} requested help")
 
-# --- Streaming message handler ---
+# --- Non-streaming message handler ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
     thread_id = str(update.message.chat_id)
@@ -63,55 +63,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payload = {"prompt": user_message, "thread_id": thread_id}
     headers = {
         "Authorization": f"Bearer {ABI_API_TOKEN}",
-        "Accept": "text/event-stream",
+        # "Accept": "text/event-stream",  # Streaming - commented for completion endpoint
     }
 
     reply_msg = await update.message.reply_text("⏳ Thinking...", parse_mode=ParseMode.MARKDOWN)
-    accumulated = ""
-    last_edit = time.monotonic()
-    last_sent_text = ""  # prevent "Message not modified"
-    event_name = None
 
     try:
         async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream("POST", ABI_API_URL, headers=headers, json=payload) as resp:
-                resp.raise_for_status()
-                async for raw_line in resp.aiter_lines():
-                    if not raw_line:
-                        continue
-                    logger.debug(f"SSE line: {raw_line}")
-
-                    # Parse event
-                    if raw_line.startswith("event:"):
-                        event_name = raw_line[len("event:"):].strip()
-                        continue
-                    if not raw_line.startswith("data:"):
-                        continue
-                    if event_name != "message":
-                        continue
-                    # For robustness, accept any event type
-                    chunk = raw_line[len("data:"):].strip()
-                    if not chunk or chunk == "[DONE]":
-                        continue
-                    accumulated += chunk
-                    now = time.monotonic()
-
-                    if now - last_edit > 0.5 and accumulated != last_sent_text:
-                        try:
-                            await reply_msg.edit_text(accumulated, parse_mode=ParseMode.MARKDOWN)
-                            last_sent_text = accumulated
-                            logger.info(f"Updated message for {thread_id}: {accumulated}")
-                        except Exception as e:
-                            logger.error(f"Failed to edit message: {e}")
-                        last_edit = now
-
-        # Final update
-        if accumulated.strip() and accumulated != last_sent_text:
-            await reply_msg.edit_text(accumulated.strip(), parse_mode=ParseMode.MARKDOWN)
-            logger.info(f"Final message sent to {thread_id}: {accumulated.strip()}")
-        elif not accumulated.strip():
-            await reply_msg.edit_text("✅ Got it — but no reply was returned.", parse_mode=ParseMode.MARKDOWN)
-            logger.info(f"No reply returned for {thread_id}")
+            # For completion (non-streaming), use the regular completion endpoint
+            resp = await client.post(ABI_API_URL, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            logger.info(f"Completion response: {data}")
+            # Expecting that the response json contains the reply text under 'text'
+            # Adjust key as needed depending on endpoint output format
+            reply_text = str(data)
+            
+            if reply_text and reply_text.strip():
+                await reply_msg.edit_text(reply_text.strip(), parse_mode=ParseMode.MARKDOWN)
+                logger.info(f"Final message sent to {thread_id}: {reply_text.strip()}")
+            else:
+                await reply_msg.edit_text("✅ Got it — but no reply was returned.", parse_mode=ParseMode.MARKDOWN)
+                logger.info(f"No reply returned for {thread_id}")
 
     except httpx.HTTPStatusError as e:
         error_text = f"HTTP error {e.response.status_code}: {e.response.text}"
