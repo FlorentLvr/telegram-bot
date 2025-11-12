@@ -136,7 +136,7 @@ async def send_to_abi_api(user_message, thread_id, reply_msg):
     }
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=300) as client:
             # For completion (non-streaming), use the regular completion endpoint
             resp = await client.post(AGENT_API_URL, headers=headers, json=payload)
             resp.raise_for_status()
