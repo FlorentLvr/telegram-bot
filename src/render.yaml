@@ -12,3 +12,5 @@ services:
         sync: false
       - key: ABI_API_TOKEN
         sync: false
+      - key: OPENAI_API_KEY
+        sync: false
