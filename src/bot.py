@@ -33,7 +33,11 @@ logger = logging.getLogger(__name__)
 
 # --- Environment variables ---
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-WEBHOOK_URL = "https://unsuppressed-observable-arlette.ngrok-free.dev"
+WEBHOOK_URL_DEV = "https://unsuppressed-observable-arlette.ngrok-free.dev"
+if os.environ.get("ENV") == "dev":
+    WEBHOOK_URL = WEBHOOK_URL_DEV
+else:
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL", WEBHOOK_URL_DEV)
 ABI_API_URL = "https://abi-api.default.space.naas.ai/agents/Support/completion"
 ABI_API_TOKEN = os.environ["ABI_API_TOKEN"]
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -226,8 +230,8 @@ flask_app = Flask(__name__)
 @flask_app.route("/webhook", methods=["POST"])
 def webhook():
     update_json = request.get_json(force=True)
-    update = Update.de_json(update_json, app.bot)
     logger.info(f"Webhook message received: {update_json}")
+    update = Update.de_json(update_json, app.bot)
     
     # Process update directly using the application's event loop
     global application_event_loop
