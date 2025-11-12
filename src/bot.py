@@ -4,6 +4,7 @@ import httpx
 import logging
 import threading
 import asyncio
+import tempfile
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import (
@@ -14,6 +15,7 @@ from telegram.ext import (
     ContextTypes
 )
 from telegram.constants import ParseMode
+from openai import OpenAI
 
 # --- Load .env if available ---
 try:
@@ -34,6 +36,12 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 WEBHOOK_URL = "https://unsuppressed-observable-arlette.ngrok-free.dev"
 ABI_API_URL = "https://abi-api.default.space.naas.ai/agents/Support/completion"
 ABI_API_TOKEN = os.environ["ABI_API_TOKEN"]
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+openai_client: OpenAI | None = None
+if OPENAI_API_KEY:
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
+else:
+    logger.warning("OPENAI_API_KEY not set - voice transcription will not work")
 
 # --- Telegram application ---
 app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -54,22 +62,77 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     logger.info(f"User {update.message.chat_id} requested help")
 
-# --- Non-streaming message handler ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
-    thread_id = str(update.message.chat_id)
-    logger.info(f"Received message from {thread_id}: {user_message}")
+# --- Voice message handling functions ---
+async def download_voice_file(voice, bot_token, save_dir=None):
+    """Download voice file from Telegram and return the file path."""
+    if not voice or not hasattr(voice, 'file_id'):
+        logger.error("No voice message found")
+        return None
+    
+    file_id = voice.file_id
+    
+    # Step 1: Get file_path for the voice file using async httpx
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"https://api.telegram.org/bot{bot_token}/getFile",
+            params={"file_id": file_id}
+        )
+        resp.raise_for_status()
+        file_info = resp.json()
+        if not file_info.get("ok") or "file_path" not in file_info.get("result", {}):
+            logger.error("Failed to get file_path from Telegram API")
+            return None
+        
+        file_path = file_info["result"]["file_path"]
+        download_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+        
+        # Step 2: Download the file
+        response = await client.get(download_url)
+        response.raise_for_status()
+        
+        # Step 3: Save the file temporarily
+        if save_dir is None:
+            save_dir = tempfile.gettempdir()
+        os.makedirs(save_dir, exist_ok=True)
+        unique_id = getattr(voice, 'file_unique_id', file_id)
+        ogg_file = os.path.join(save_dir, f"{unique_id}.ogg")
+        
+        with open(ogg_file, "wb") as f:
+            f.write(response.content)
+        
+        logger.info(f"Voice file downloaded to: {ogg_file}")
+        return ogg_file
 
+async def transcribe_audio_with_openai(audio_file_path):
+    """Transcribe audio file using OpenAI. Supports OGG and other formats."""
+    if not openai_client:
+        raise RuntimeError("OPENAI_API_KEY not set - cannot transcribe audio")
+    
+    # Run the synchronous OpenAI call in an executor to avoid blocking the event loop
+    def _transcribe():
+        with open(audio_file_path, "rb") as audio_file:
+            transcription = openai_client.audio.transcriptions.create(
+                model="gpt-4o-mini-transcribe",
+                file=audio_file
+            )
+        return transcription.text
+    
+    loop = asyncio.get_event_loop()
+    transcribed_text = await loop.run_in_executor(None, _transcribe)
+    logger.info(f"Transcription: {transcribed_text}")
+    return transcribed_text
+
+# --- Shared function to send message to ABI API ---
+async def send_to_abi_api(user_message, thread_id, reply_msg):
+    """Send user message to ABI API and update the reply message."""
     payload = {"prompt": user_message, "thread_id": thread_id}
     headers = {
         "Authorization": f"Bearer {ABI_API_TOKEN}",
         # "Accept": "text/event-stream",  # Streaming - commented for completion endpoint
     }
 
-    reply_msg = await update.message.reply_text("⏳ Thinking...", parse_mode=ParseMode.MARKDOWN)
-
     try:
-        async with httpx.AsyncClient(timeout=None) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             # For completion (non-streaming), use the regular completion endpoint
             resp = await client.post(ABI_API_URL, headers=headers, json=payload)
             resp.raise_for_status()
@@ -94,10 +157,68 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_msg.edit_text(f"⚠️ Internal error: {e}", parse_mode=ParseMode.MARKDOWN)
         logger.error(f"Internal error for {thread_id}: {e}")
 
+# --- Non-streaming message handler ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text
+    thread_id = str(update.message.chat_id)
+    logger.info(f"Received message from {thread_id}: {user_message}")
+
+    reply_msg = await update.message.reply_text("⏳ Thinking...", parse_mode=ParseMode.MARKDOWN)
+    await send_to_abi_api(user_message, thread_id, reply_msg)
+
+# --- Voice message handler ---
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle voice messages by downloading, transcribing, and processing them."""
+    voice = update.message.voice
+    thread_id = str(update.message.chat_id)
+    logger.info(f"Received voice message from {thread_id}")
+    
+    if not openai_client:
+        await update.message.reply_text(
+            "❌ Voice transcription is not available. Please set OPENAI_API_KEY environment variable.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    reply_msg = await update.message.reply_text("🎤 Transcribing voice...", parse_mode=ParseMode.MARKDOWN)
+    
+    try:
+        # Download the voice file
+        ogg_file = await download_voice_file(voice, BOT_TOKEN)
+        if not ogg_file:
+            await reply_msg.edit_text("❌ Failed to download voice file", parse_mode=ParseMode.MARKDOWN)
+            return
+        
+        # Transcribe the audio
+        await reply_msg.edit_text("📝 Processing transcription...", parse_mode=ParseMode.MARKDOWN)
+        transcribed_text = await transcribe_audio_with_openai(ogg_file)
+        
+        # Clean up the temporary file
+        try:
+            os.remove(ogg_file)
+        except Exception as e:
+            logger.warning(f"Failed to delete temporary file {ogg_file}: {e}")
+        
+        if not transcribed_text or not transcribed_text.strip():
+            await reply_msg.edit_text("❌ Could not transcribe the voice message", parse_mode=ParseMode.MARKDOWN)
+            return
+        
+        logger.info(f"Transcribed text from {thread_id}: {transcribed_text}")
+        
+        # Send the transcribed text to ABI API
+        await reply_msg.edit_text(f"⏳ Responding to: {transcribed_text}...", parse_mode=ParseMode.MARKDOWN)
+        await send_to_abi_api(transcribed_text, thread_id, reply_msg)
+        
+    except Exception as e:
+        error_msg = f"⚠️ Error processing voice message: {e}"
+        await reply_msg.edit_text(error_msg, parse_mode=ParseMode.MARKDOWN)
+        logger.error(f"Error processing voice message for {thread_id}: {e}")
+
 # --- Add handlers ---
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("help", help_command))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
 # --- Flask app for webhook ---
 flask_app = Flask(__name__)
