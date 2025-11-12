@@ -11,9 +11,6 @@ from telegram.ext import (
     filters,
 )
 from telegram.constants import ParseMode
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # --- Flask for webhook endpoint ---
 app_flask = Flask(__name__)
