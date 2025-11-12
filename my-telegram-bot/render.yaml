@@ -10,5 +10,5 @@ services:
         sync: false
       - key: WEBHOOK_URL
         sync: false
-      - key: AI_API_TOKEN
+      - key: ABI_API_TOKEN
         sync: false
