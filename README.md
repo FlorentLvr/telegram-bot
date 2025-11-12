@@ -1,6 +1,6 @@
 # Telegram Bot to AI Agent
 
-## Prerequisites
+### Prerequisites
 
 * Telegram account (mobile or desktop)
 * Git & GitHub account
@@ -10,7 +10,7 @@
 * OpenAI account (to transcribe voice messages)
 * Your AI agent token / API endpoint
 
-# 1. Create the bot on Telegram (BotFather)
+## 1. Create the bot on Telegram (BotFather)
 
 1. Open Telegram and search for **@BotFather**.
 2. Start a chat and send:
@@ -25,7 +25,7 @@
 4. BotFather responds with your **Bot Token** (format like `123456:ABC...`).
    **Save it** — you will store it in environment variables (never commit to Git).
 
-# 2. Setup Repository
+## 2. Setup Repository
 
 1. Clone this repository:
 
@@ -54,7 +54,7 @@
    ```
 
 
-# 3. Local webhook testing with ngrok
+## 3. Local webhook testing with ngrok
 
 Telegram webhooks require a public HTTPS URL — ngrok can expose your local server.
 
@@ -93,7 +93,7 @@ Look for `"url": "https://abc123.ngrok.io/webhook"` and no recent 404 errors.
 * ngrok request inspector ([http://127.0.0.1:4040](http://127.0.0.1:4040)) shows incoming POSTs
 
 
-# 6. Render deployment (production)
+## 6. Render deployment (production)
 
 1. Create a new **Web Service** on Render and connect your GitHub repo.
 2. Settings:
