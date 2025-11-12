@@ -8,8 +8,13 @@ from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
     CommandHandler,
+    MessageHandler,
+    filters,
 )
 from telegram.constants import ParseMode
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- Flask for webhook endpoint ---
 app_flask = Flask(__name__)
@@ -67,8 +72,8 @@ tg_app.add_handler(
     CommandHandler("help", lambda u, c: u.message.reply_text("Just send me a message — I'll forward it to Support."))
 )
 tg_app.add_handler(
-    # Handle all text messages
-    tg_app.message_handler(filters=None)(handle_message)
+    # Handle all text messages (excluding commands)
+    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
 )
 
 # --- Flask routes for webhook ---
