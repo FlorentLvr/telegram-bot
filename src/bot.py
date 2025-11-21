@@ -47,6 +47,64 @@ if OPENAI_API_KEY:
 else:
     logger.warning("OPENAI_API_KEY not set - voice transcription will not work")
 
+# --- Authorization ---
+AUTHORIZED_USER_IDS_STR = os.environ.get("AUTHORIZED_USER_IDS_STR", "")
+AUTHORIZED_USERNAMES_STR = os.environ.get("AUTHORIZED_USERNAMES_STR", "")  # Comma-separated Telegram usernames (without @)
+
+AUTHORIZED_USER_IDS = set()
+AUTHORIZED_USERNAMES = set()
+
+if AUTHORIZED_USER_IDS_STR:
+    try:
+        AUTHORIZED_USER_IDS = {int(uid.strip()) for uid in AUTHORIZED_USER_IDS_STR.split(",") if uid.strip()}
+        logger.info(f"Authorized user IDs: {AUTHORIZED_USER_IDS}")
+    except ValueError as e:
+        logger.error(f"Invalid AUTHORIZED_USER_IDS format: {e}")
+        AUTHORIZED_USER_IDS = set()
+else:
+    logger.warning("AUTHORIZED_USER_IDS not set - bot will accept all user IDs")
+
+if AUTHORIZED_USERNAMES_STR:
+    try:
+        AUTHORIZED_USERNAMES = {uname.strip().lower() for uname in AUTHORIZED_USERNAMES_STR.split(",") if uname.strip()}
+        logger.info(f"Authorized usernames: {AUTHORIZED_USERNAMES}")
+    except Exception as e:
+        logger.error(f"Invalid AUTHORIZED_USERNAMES format: {e}")
+        AUTHORIZED_USERNAMES = set()
+else:
+    logger.warning("AUTHORIZED_USERNAMES not set - bot will accept all usernames")
+
+def is_authorized_user(update: Update) -> bool:
+    """Check if the user is authorized to use the bot (by user ID or username)."""
+    if not AUTHORIZED_USER_IDS and not AUTHORIZED_USERNAMES:
+        # If no authorized users/usernames are set, allow all users
+        return True
+    
+    user_id = None
+    username = None
+    if update.message and update.message.from_user:
+        user_id = update.message.from_user.id
+        username = update.message.from_user.username
+        if username:
+            username = username.lower()
+    
+    # Deny if unable to extract both
+    if user_id is None and username is None:
+        logger.warning("Could not extract user ID or username from update")
+        return False
+
+    is_authorized = (
+        (user_id in AUTHORIZED_USER_IDS) if user_id is not None else False
+    ) or (
+        (username in AUTHORIZED_USERNAMES) if username is not None else False
+    )
+
+    if not is_authorized:
+        logger.warning(
+            f"Unauthorized access attempt from user ID: {user_id} or username: {username}"
+        )
+    return is_authorized
+
 # --- Telegram application ---
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -55,14 +113,39 @@ application_event_loop = None
 
 # --- Command handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized_user(update):
+        await update.message.reply_text(
+            "❌ You are not authorized to use this bot."
+        )
+        return
+    
     await update.message.reply_text(
-        "👋 Hi! I’m your Support Assistant. Tell me any issue or feedback!"
+        "👋 Hi! How can I help you today?"
     )
     logger.info(f"User {update.message.chat_id} started the bot")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized_user(update):
+        await update.message.reply_text(
+            "❌ You are not authorized to use this bot."
+        )
+        return
+    
+    help_text = (
+        "🤖 *How this bot works:*\n\n"
+        "This bot connects to an AI agent API to process your messages. "
+        f"The bot communicates with the agent at:\n`{AGENT_API_URL}`\n\n"
+        "Just send me a message or voice note, and I'll forward it to the AI agent for processing.\n\n"
+        "📚 *About ABI:*\n"
+        "ABI is built with the open source project:\n"
+        "https://github.com/jupyter-naas/abi\n\n"
+        "📧 *Support:*\n"
+        "For any inquiries, please send an email to: support@naas.ai"
+    )
+    
     await update.message.reply_text(
-        "Just send me a message — I'll forward it to Support."
+        help_text,
+        parse_mode=ParseMode.MARKDOWN
     )
     logger.info(f"User {update.message.chat_id} requested help")
 
@@ -163,8 +246,16 @@ async def send_to_abi_api(user_message, thread_id, reply_msg):
 
 # --- Non-streaming message handler ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized_user(update):
+        await update.message.reply_text(
+            "❌ You are not authorized to use this bot."
+        )
+        return
+    
     user_message = update.message.text
-    thread_id = str(update.message.chat_id)
+    import hashlib
+    chat_id_str = str(update.message.chat_id)
+    thread_id = hashlib.sha256(chat_id_str.encode()).hexdigest()
     logger.info(f"Received message from {thread_id}: {user_message}")
 
     reply_msg = await update.message.reply_text("⏳ Thinking...", parse_mode=ParseMode.MARKDOWN)
@@ -173,6 +264,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Voice message handler ---
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle voice messages by downloading, transcribing, and processing them."""
+    if not is_authorized_user(update):
+        await update.message.reply_text(
+            "❌ You are not authorized to use this bot."
+        )
+        return
+    
     voice = update.message.voice
     thread_id = str(update.message.chat_id)
     logger.info(f"Received voice message from {thread_id}")
@@ -232,6 +329,13 @@ def webhook():
     update_json = request.get_json(force=True)
     logger.info(f"Webhook message received: {update_json}")
     update = Update.de_json(update_json, app.bot)
+    logger.info(f"Update attributes:")
+    for attr in dir(update):
+        # Skip private and built-in methods
+        if attr.startswith("__") and attr.endswith("__"):
+            continue
+        value = getattr(update, attr)
+        logger.info(f"  {attr}: {value}")
     
     # Process update directly using the application's event loop
     global application_event_loop
@@ -280,9 +384,39 @@ def run_async_loop():
 # --- Run Flask server ---
 if __name__ == "__main__":
     import sys
+    import requests
+
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"Starting Flask webhook server on port {port}")
-    logger.info(f"Webhook URL: {WEBHOOK_URL}/webhook")
+
+    # --- Set webhook with Telegram API before starting server ---
+    try:
+        telegram_token = BOT_TOKEN
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        resp = requests.post(
+            f"https://api.telegram.org/bot{telegram_token}/setWebhook",
+            data={"url": webhook_url},
+            timeout=10
+        )
+        logger.info(f"Set webhook response: {resp.status_code} {resp.text}")
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error(f"Failed to set Telegram webhook: {e}")
+        sys.exit(1)
+
+    # --- Get webhook info with Telegram API ---
+    try:
+        resp = requests.get(
+            f"https://api.telegram.org/bot{telegram_token}/getWebhookInfo",
+            timeout=10
+        )
+        logger.info(f"Get webhook info response: {resp.status_code} {resp.text}")
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error(f"Failed to get Telegram webhook info: {e}")
+        sys.exit(1)
+
+    logger.info(f"Webhook URL: {WEBHOOK_URL}")
 
     # Start Telegram app in background
     threading.Thread(target=run_async_loop, daemon=True).start()
